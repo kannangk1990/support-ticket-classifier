@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ticket Classifier</title>
+  <style>
+    :root {
+      --bg: #f7f7f5; --surface: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+      --border: #dddcd6; --accent: #2f5bd3; --warn-bg: #fff4e0; --warn-text: #7a4a00;
+      --ok-bg: #e7f5ec; --ok-text: #1d6b3a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161615; --surface: #20201f; --text: #ededea; --muted: #a3a39d;
+        --border: #3a3a37; --accent: #7d9bff; --warn-bg: #3b2a0c; --warn-text: #ffcf85;
+        --ok-bg: #12301f; --ok-text: #8fdcaa;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main { max-width: 720px; margin: 0 auto; padding: 32px 16px 64px; }
+    h1 { font-size: 1.5rem; margin: 0 0 4px; }
+    p.lead { color: var(--muted); margin: 0 0 24px; }
+    textarea {
+      width: 100%; min-height: 140px; padding: 12px; resize: vertical;
+      font: inherit; color: inherit; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 8px;
+    }
+    textarea:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .row { display: flex; gap: 12px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+    button {
+      font: inherit; padding: 8px 18px; border-radius: 8px; border: 0; cursor: pointer;
+      background: var(--accent); color: #fff;
+    }
+    button:disabled { opacity: .6; cursor: progress; }
+    #status { color: var(--muted); }
+    .card {
+      margin-top: 24px; padding: 20px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 12px;
+    }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+    dt { color: var(--muted); }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .875rem; }
+    .badge.review { background: var(--warn-bg); color: var(--warn-text); }
+    .badge.auto { background: var(--ok-bg); color: var(--ok-text); }
+    [hidden] { display: none !important; }
+    .visually-hidden {
+      position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0 0 0 0); white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Support ticket classifier</h1>
+  <p class="lead">Runs locally on your Claude subscription. Personal data is redacted before the ticket is sent to Claude.</p>
+
+  <form id="form">
+    <label for="ticket" class="visually-hidden">Ticket text</label>
+    <textarea id="ticket" name="ticket" minlength="5" maxlength="5000" required
+      placeholder="I was charged twice for order #4512 and nobody answers my emails."></textarea>
+    <div class="row">
+      <button id="submit" type="submit">Classify</button>
+      <span id="status" role="status" aria-live="polite"></span>
+    </div>
+  </form>
+
+  <section id="result" class="card" hidden aria-live="polite">
+    <p><span id="review-badge" class="badge"></span></p>
+    <dl id="fields"></dl>
+  </section>
+</main>
+<script>
+  const form = document.getElementById("form");
+  const submit = document.getElementById("submit");
+  const statusEl = document.getElementById("status");
+  const resultEl = document.getElementById("result");
+  const fieldsEl = document.getElementById("fields");
+  const badge = document.getElementById("review-badge");
+
+  const label = (value) => String(value).replaceAll("_", " ");
+
+  function addField(name, value) {
+    const dt = document.createElement("dt");
+    const dd = document.createElement("dd");
+    dt.textContent = name;
+    dd.textContent = value; // textContent, never innerHTML: the reasoning is model output
+    fieldsEl.append(dt, dd);
+  }
+
+  function render(result) {
+    fieldsEl.replaceChildren();
+    badge.className = "badge " + (result.requires_human_review ? "review" : "auto");
+    badge.textContent = result.requires_human_review
+      ? "Needs human review: " + result.review_reasons.map(label).join(", ")
+      : "Auto-routed";
+    addField("Category", label(result.issue_category));
+    addField("Team", label(result.assigned_team));
+    addField("Priority", label(result.priority));
+    addField("Sentiment", label(result.sentiment));
+    addField("Confidence", Math.round(result.confidence * 100) + "%");
+    addField("Reasoning", result.reasoning);
+    addField("PII redacted", result.pii_redacted.length ? result.pii_redacted.join(", ") : "none");
+    addField("Status", label(result.status));
+    if (result.usage) {
+      addField("Time", (result.usage.duration_ms / 1000).toFixed(1) + " s");
+      addField("Tokens", result.usage.input_tokens + " in / " + result.usage.output_tokens + " out");
+    }
+    resultEl.hidden = false;
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    statusEl.textContent = "Classifying…";
+    try {
+      const response = await fetch("/api/v1/classify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket_text: document.getElementById("ticket").value }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        const detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join("; ") : body.detail;
+        throw new Error(detail || "Request failed (" + response.status + ")");
+      }
+      render(body);
+      statusEl.textContent = "";
+    } catch (error) {
+      resultEl.hidden = true;
+      statusEl.textContent = error.message;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
