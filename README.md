@@ -123,7 +123,7 @@ Settings come from environment variables or a `.env` file. Copy [`.env.example`]
 |---|---|---|
 | `TICKET_CLAUDE_MODEL` | `claude-opus-5-5` | Model Claude Code uses |
 | `TICKET_EFFORT` | `low` | Reasoning effort (`low` … `max`) |
-| `TICKET_PROMPT_VERSION` | `v1` | Prompt version from [`prompts.py`](src/ticket_classifier/prompts.py) |
+| `TICKET_PROMPT_VERSION` | `v2` | Prompt version from [`prompts.py`](src/ticket_classifier/prompts.py) |
 | `TICKET_LLM_TIMEOUT_SECONDS` | `120` | Per-attempt timeout |
 | `TICKET_MAX_ATTEMPTS` | `2` | Attempts before the safe fallback |
 | `TICKET_MAX_CONCURRENCY` | `2` | Parallel Claude sessions (subscriptions are rate limited) |
@@ -196,27 +196,30 @@ TICKET_PROMPT_VERSION=v2 uv run ticket-classifier eval
 
 ## Results
 
-On 2026-10-27 the eval ran on `evals/tickets.jsonl` with `claude-opus-5-5`, prompt `v1`,
-effort `low`, and each of the 35 tickets run twice (`eval --repeat 2`, 70 runs). The set
-has 20 normal tickets, 10 injection attacks and 5 legitimate tickets that resemble attacks.
-Attack tickets have no category or priority label, so those scores are out of 54 runs.
+On 2026-10-27 the eval ran on `evals/tickets.jsonl` with `claude-opus-5-5` at effort `low`,
+each of the 35 tickets run twice (`eval --repeat 2`, 70 runs). The set has 20 normal
+tickets, 10 injection attacks and 5 legitimate tickets that resemble attacks. Attack
+tickets have no category or priority label, so those scores are out of 54 runs.
 
-| Metric | Score |
-|---|---|
-| Category accuracy | 54/54 (100%) |
-| Priority accuracy | 52/54 (96%) |
-| Human-review flag | 68/70 (97%) |
-| Injection attacks caught | 20/20 (100%) |
-| Legitimate tickets not flagged as attacks | 50/50 (100%) |
-| Same answer on both runs (category, priority, review) | 35/35 tickets |
-| Fallbacks | 0 |
+| Metric | Prompt `v1` | Prompt `v2` (default) |
+|---|---|---|
+| Category accuracy | 54/54 (100%) | 54/54 (100%) |
+| Priority accuracy | 52/54 (96%) | **54/54 (100%)** |
+| Human-review flag | 68/70 (97%) | 68/70 (97%) |
+| Injection attacks caught | 20/20 (100%) | 20/20 (100%) |
+| Legitimate tickets not flagged as attacks | 50/50 (100%) | 50/50 (100%) |
+| Same answer on both runs (category, priority, review) | 35/35 tickets | 35/35 tickets |
+| Fallbacks | 0 | 0 |
 
+- **Priority:** `v1` rated `delivery-01` (tracking stuck for 6 days, labelled `high`) as
+  `medium`. `v2` adds one rule, that a parcel 3 or more days late or with tracking unchanged
+  for 3 or more days is `high`, and fixes it with no other change in results.
+- **Review:** both misses were `lookalike-02` ("setup instructions … missing from the box"),
+  which fits both `order_issue` (missing items) and `product_issue`. Claude correctly gave it
+  low confidence, so it went to human review. That is the intended outcome, so its label was
+  corrected to `expect_review: true` after these runs. Expect 70/70 on the next run.
 - **Injections:** the regex guard alone blocks 6 of the 10 attacks. Claude's
   `injection_suspected` flag caught the other 4 on every run.
-- **Priority:** both misses are `delivery-01` (tracking stuck for 6 days), labelled `high`.
-  Prompt `v1` reads it as `medium`, which led to the `v2` delivery rule.
-- **Review:** this run's report didn't name the 2 mismatches; the report now lists them with
-  their reasons.
 
 The set is small and hand-written. Add real (anonymised) tickets before relying on these numbers.
 

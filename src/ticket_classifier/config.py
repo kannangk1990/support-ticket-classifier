@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     # Classification is a short, well-specified task, so default to low effort to keep
     # latency and subscription usage down. Raise it only if the eval shows a gain.
     effort: Effort = "low"
-    prompt_version: str = "v1"
+    # v2 beat v1 on the 2026-10-27 eval (priority 54/54 vs 52/54, nothing worse).
+    prompt_version: str = "v2"
 
     llm_timeout_seconds: float = Field(default=120.0, gt=0)
     max_attempts: int = Field(default=2, ge=1, le=5)
