@@ -12,3 +12,5 @@
 - Every change needs tests for its new behaviour, and the full suite must pass before pushing
   (the pre-push hook enforces this). Never modify, weaken, skip or delete an existing test to
   make a change pass; fix the code instead, and if a test itself looks wrong, ask the user first.
+- Design decisions and their reasons are in `docs/decisions.md`. Follow them, and add or
+  update an entry there when a change makes or reverses a decision.
