@@ -43,6 +43,89 @@ ticket ──▶ redact PII ──▶ injection pre-check ──▶ Claude (stru
 > other people. Run this for yourself, on your own machine and subscription. Don't host
 > it as a service for others.
 
+## Run it locally, step by step
+
+**1. Install the tools (once).**
+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/), e.g. `brew install uv` on macOS.
+  You don't need to install Python yourself: `uv` downloads Python 3.12 automatically
+  (the version pinned in `.python-version`).
+- [Claude Code](https://claude.com/claude-code). Run `claude`, then `/login`, and sign in
+  with your Pro or Max subscription.
+
+**2. Get the code and install dependencies.**
+
+```bash
+git clone https://github.com/kannangk1990/support-ticket-classifier.git
+cd support-ticket-classifier
+uv sync
+```
+
+**3. Make sure no API key is set.** The app refuses to start if one is, so it can never bill
+the API by accident. This prints only the *names* of any such variables, never their values:
+
+```bash
+env | cut -d= -f1 | grep -E '^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_USE_)'
+```
+
+No output means you're fine. Otherwise remove each listed variable (e.g.
+`unset ANTHROPIC_API_KEY`) and from your shell profile too.
+
+**4. Optional: check the install offline.** The tests use a fake Claude, so this uses none
+of your subscription:
+
+```bash
+uv run pytest
+```
+
+**5. Start the server with step-by-step logs.**
+
+```bash
+TICKET_LOG_LEVEL=DEBUG uv run ticket-classifier serve
+```
+
+Wait for this startup line:
+
+```text
+INFO ticket_classifier.api: Ticket classifier ready: model=claude-opus-5-5 prompt=v2
+```
+
+**6. Classify a ticket in the browser.** Open <http://127.0.0.1:8000> and paste:
+
+```text
+Tracking has said 'out for delivery' for 6 days. Email me at jane.doe@example.com
+```
+
+After a few seconds the page shows the result: category `delivery issue`, team
+`logistics team` and priority `high`. *PII redacted* shows `email`, and *Sent to Claude*
+shows the text with `[EMAIL]` in place of the address. The terminal logs each step for
+that ticket, without the ticket text:
+
+```text
+ticket=… received chars=… redacted pii=email
+ticket=… guard passed
+ticket=… attempt 1 started
+ticket=… attempt 1 succeeded duration_ms=… tokens_in=… tokens_out=…
+ticket=… category=delivery_issue priority=high review=False attempts=1 pii=email
+```
+
+**7. Stop the server** with Ctrl+C. Results are kept in `data/tickets.db` (gitignored);
+see the `purge` command in the Quick start below.
+
+> **Usage:** every classification starts a Claude Code session on your subscription and
+> counts toward its limits. A full `eval --repeat 2` makes 70 calls; use `--limit` for a
+> cheaper run.
+
+**If something goes wrong**
+
+| Symptom | Fix |
+|---|---|
+| `Refusing to call Claude: ANTHROPIC_API_KEY is set …` | Step 3: unset the variable. |
+| `Claude Code CLI not found` | Run `uv sync` again. |
+| Every ticket falls back to human review | You're probably not signed in. Run `claude`, then `/login`. |
+| `address already in use` | Another server is on port 8000. Stop it, or start with `TICKET_PORT=8001`. |
+| Startup line shows `prompt=v1` | A `.env` file sets `TICKET_PROMPT_VERSION`. Remove that line. |
+
 ## Quick start
 
 ```bash
@@ -60,9 +143,9 @@ Read from stdin with `classify -`. To see the API schema, run the server and ope
 `eval` reports category, priority and review accuracy, how many injection attacks were
 caught, and how many legitimate tickets were wrongly flagged as injections. Add
 `--repeat 3` to run each ticket three times and see how stable the answers are. The report
-names every category and priority mistake by ticket and run, and lists tickets whose answers
-changed between runs with the values seen. Each run is
-saved as JSON in `evals/results/` (gitignored) so you can compare runs over time.
+names every category, priority and review-flag mistake by ticket and run (with the review
+reasons), and lists tickets whose answers changed between runs with the values seen. Each
+run is saved as JSON in `evals/results/` (gitignored) so you can compare runs over time.
 
 ### API
 
