@@ -1,7 +1,7 @@
 """Versioned system prompts. Add a new version instead of editing a released one, so
 eval results stay comparable across versions."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
@@ -74,6 +74,20 @@ def get_prompt(version: str) -> PromptVersion:
         raise UnknownPromptVersionError(
             f"Unknown prompt version {version!r}. Available: {available}"
         ) from None
+
+
+def build_retry_note(invalid_fields: Sequence[str]) -> str:
+    """Feedback for a retry after unusable output. It names schema fields only, never
+    values, so nothing from the ticket or the rejected answer is echoed back."""
+    if not invalid_fields:
+        return (
+            "Your previous answer did not contain a usable classification. "
+            "Answer again using the required schema."
+        )
+    return (
+        "Your previous answer was rejected because these fields were missing or invalid: "
+        f"{', '.join(invalid_fields)}. Answer again using only the allowed values."
+    )
 
 
 def build_user_message(ticket_text: str) -> str:

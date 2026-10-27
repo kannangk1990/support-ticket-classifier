@@ -30,6 +30,11 @@ class LLMOutputError(LLMError):
     """The model answered, but not with usable structured output. Worth one retry."""
 
 
+class LLMRefusalError(LLMOutputError):
+    """The model declined to answer. Retrying the same ticket rarely changes that, so the
+    classifier goes straight to the fallback."""
+
+
 class LLMConfigurationError(LLMError):
     """The backend is set up wrongly (CLI missing, API credentials present). Never retried:
     the operator has to fix it."""

@@ -23,6 +23,7 @@ from ticket_classifier.config import Effort
 from ticket_classifier.llm.base import (
     LLMConfigurationError,
     LLMOutputError,
+    LLMRefusalError,
     LLMResponse,
     LLMUnavailableError,
     LLMUsage,
@@ -121,7 +122,7 @@ def _error_for_result(
     subtype: str | None, stop_reason: object
 ) -> LLMOutputError | LLMUnavailableError:
     if stop_reason == "refusal":
-        return LLMOutputError("Claude declined to classify this ticket")
+        return LLMRefusalError("Claude declined to classify this ticket")
     if subtype in ("error_max_structured_output_retries", "error_max_turns"):
         return LLMOutputError(f"Claude did not produce valid structured output ({subtype})")
     return LLMUnavailableError(f"Claude Code run failed ({subtype})")
