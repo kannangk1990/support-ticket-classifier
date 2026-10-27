@@ -94,6 +94,13 @@ class TicketClassifier:
             )
 
         reasons = review_reasons(classification, self._settings.review_confidence_threshold)
+        reasoning = redact_pii(classification.reasoning)
+        if reasoning.pii_detected:
+            logger.warning(
+                "ticket=%s personal data in model reasoning redacted pii=%s",
+                ticket_id,
+                ",".join(reasoning.found),
+            )
         logger.info(
             "ticket=%s category=%s priority=%s review=%s attempts=%d pii=%s",
             ticket_id,
@@ -111,7 +118,7 @@ class TicketClassifier:
             priority=classification.priority,
             sentiment=classification.sentiment,
             confidence=classification.confidence,
-            reasoning=classification.reasoning,
+            reasoning=reasoning.text,
             requires_human_review=bool(reasons),
             review_reasons=reasons,
             pii_redacted=pii,

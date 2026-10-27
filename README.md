@@ -25,7 +25,7 @@ ticket ──▶ redact PII ──▶ injection pre-check ──▶ Claude (stru
 
 | Concern | Approach |
 |---|---|
-| Privacy | Emails, phone numbers and Luhn-valid card numbers are replaced with placeholders **before** anything is sent to Claude. Logs record ticket IDs and PII *types*, never ticket text. |
+| Privacy | Emails, phone numbers, Luhn-valid card numbers, checksum-valid IBANs, US SSNs and IP addresses are replaced with placeholders **before** anything is sent to Claude. Logs record ticket IDs and PII *types*, never ticket text. If Claude's reasoning still contains personal data, it is redacted and the ticket goes to human review. |
 | Prompt injection | Ticket text is passed as delimited data. A cheap regex pre-check stops blatant attacks before they cost a call. Claude reports `injection_suspected` for subtler ones, which forces human review. |
 | Consistent routing | Claude picks only the category, priority and sentiment. The team and the human-review decision come from fixed rules in [`routing.py`](src/ticket_classifier/routing.py), so they can't contradict each other. |
 | Reliability | Output is validated with Pydantic. A bad or missing result is retried once, then replaced by a safe fallback that goes to a human. A misconfigured backend fails loudly instead of being masked. |
@@ -135,6 +135,9 @@ tests/               offline unit tests plus one opt-in live test
 ### Changing the prompt
 
 Add a new version to `PROMPTS` in `prompts.py` rather than editing a released one.
+`tests/test_contracts.py` stores a hash of each released prompt and fails if one is edited,
+so also add the new version's hash there. The same file checks that the API stays
+backward compatible with the snapshots in `tests/contracts/`.
 Then compare the versions:
 
 ```bash
@@ -157,8 +160,8 @@ The set is small and hand-written. Add real (anonymised) tickets before relying 
 
 ## Limitations
 
-- PII redaction is regex-based. It doesn't catch names, postal addresses or account
-  numbers in free text.
+- PII redaction is regex-based. It doesn't catch names, postal addresses, dates of birth
+  or non-IBAN account numbers in free text.
 - The injection pre-check only catches blatant patterns. Subtle attempts depend on
   Claude's `injection_suspected` flag and the fact that the output can only be a classification.
 - Each call starts a Claude Code session, which takes a few seconds and counts against

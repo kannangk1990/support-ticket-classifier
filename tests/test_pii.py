@@ -53,3 +53,56 @@ def test_reports_each_type_once_in_stable_order() -> None:
 
     assert result.found == (PiiType.EMAIL, PiiType.PHONE)
     assert result.text == "[EMAIL] then [EMAIL] then [PHONE]"
+
+
+@pytest.mark.parametrize(
+    "iban", ["DE89 3704 0044 0532 0130 00", "GB82WEST12345698765432", "FR1420041010050500013M02606"]
+)
+def test_redacts_checksum_valid_ibans(iban: str) -> None:
+    result = redact_pii(f"Refund to {iban} please")
+
+    assert result.text == "Refund to [IBAN] please"
+    assert result.found == (PiiType.IBAN,)
+
+
+@pytest.mark.parametrize("ip", ["192.168.1.10", "8.8.8.8", "2001:db8::8a2e:370:7334"])
+def test_redacts_ip_addresses(ip: str) -> None:
+    result = redact_pii(f"Login from {ip}.")
+
+    assert result.text == "Login from [IP]."
+    assert result.found == (PiiType.IP_ADDRESS,)
+
+
+def test_redacts_valid_us_ssn() -> None:
+    result = redact_pii("My SSN is 123-45-6789 for the tax form")
+
+    assert result.text == "My SSN is [SSN] for the tax form"
+    assert result.found == (PiiType.SSN,)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Order DE12345678901234 is late",  # IBAN-shaped but fails the mod-97 check
+        "Firmware 1.2.3 crashes",
+        "Address 999.1.1.1 is not real",  # not a valid IPv4 address
+        "The meeting is at 10:30:00 today",
+        "Use the :: separator",
+        "SSN 000-12-3456 is never issued",
+        "Reference 123456789 without dashes",
+    ],
+)
+def test_leaves_lookalike_numbers_alone(text: str) -> None:
+    result = redact_pii(text)
+
+    assert result.text == text
+    assert not result.pii_detected
+
+
+def test_new_pii_types_mix_with_existing_ones() -> None:
+    text = "jane@example.com, IBAN GB82WEST12345698765432, IP 10.0.0.7, SSN 123-45-6789"
+
+    result = redact_pii(text)
+
+    assert result.text == "[EMAIL], IBAN [IBAN], IP [IP], SSN [SSN]"
+    assert result.found == (PiiType.EMAIL, PiiType.IBAN, PiiType.SSN, PiiType.IP_ADDRESS)

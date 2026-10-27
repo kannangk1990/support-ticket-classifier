@@ -5,6 +5,7 @@ from types import MappingProxyType
 from typing import Final
 
 from ticket_classifier.models import IssueCategory, LLMClassification, Priority, ReviewReason, Team
+from ticket_classifier.pii import redact_pii
 
 CATEGORY_TEAM: Final[Mapping[IssueCategory, Team]] = MappingProxyType(
     {
@@ -35,4 +36,8 @@ def review_reasons(
         reasons.append(ReviewReason.CRITICAL_PRIORITY)
     if classification.issue_category is IssueCategory.OTHER:
         reasons.append(ReviewReason.UNCATEGORISED)
+    # Claude only ever sees redacted text, so personal data in its answer means a
+    # pattern was missed or invented; a human should look before anyone acts on it.
+    if redact_pii(classification.reasoning).pii_detected:
+        reasons.append(ReviewReason.PII_IN_OUTPUT)
     return reasons
