@@ -166,3 +166,71 @@ def test_bundled_dataset_covers_attacks_and_lookalikes() -> None:
 def test_cli_rejects_zero_repeats(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["eval", "--repeat", "0"]) == 2
     assert "--repeat must be at least 1" in capsys.readouterr().err
+
+
+async def test_lists_priority_mistakes_by_ticket_and_run(settings: Settings) -> None:
+    ticket = LabelledTicket(
+        id="delivery-01",
+        text="Parcel late.",
+        category=IssueCategory.DELIVERY,
+        priority=Priority.HIGH,
+    )
+    report = report_for(settings, repeats=2)
+
+    report.record(
+        ticket,
+        [
+            await classify(settings, ticket.text),
+            await classify(settings, ticket.text, priority="medium"),
+        ],
+    )
+
+    assert report.priority_mistakes == ["delivery-01 (run 2): expected high, got medium"]
+    assert report.mistakes == []  # category was right both times
+    assert "Priority mistakes:\n  - delivery-01 (run 2): expected high, got medium" in (
+        report.render()
+    )
+
+
+async def test_names_unstable_tickets_and_what_changed(settings: Settings) -> None:
+    steady = LabelledTicket(id="steady", text="Parcel late.", category=IssueCategory.DELIVERY)
+    wobbly = LabelledTicket(id="wobbly", text="Parcel late.", category=IssueCategory.DELIVERY)
+    report = report_for(settings, repeats=3)
+
+    report.record(steady, [await classify(settings, steady.text) for _ in range(3)])
+    report.record(
+        wobbly,
+        [
+            await classify(settings, wobbly.text),
+            await classify(
+                settings, wobbly.text, priority="critical", issue_category="order_issue"
+            ),
+            await classify(settings, wobbly.text),
+        ],
+    )
+
+    assert report.unstable == [
+        "wobbly: category delivery_issue/order_issue; priority high/critical; review no/yes"
+    ]
+    assert "Unstable tickets:\n  - wobbly:" in report.render()
+
+
+async def test_single_runs_never_report_unstable_tickets(settings: Settings) -> None:
+    ticket = LabelledTicket(id="t1", text="Parcel late.", category=IssueCategory.DELIVERY)
+    report = report_for(settings)
+
+    report.record(ticket, [await classify(settings, ticket.text, priority="low")])
+
+    assert report.unstable == []
+    assert "Unstable" not in report.render()
+
+
+def test_saved_report_includes_the_named_tickets(settings: Settings, tmp_path: Path) -> None:
+    report = report_for(settings, repeats=2)
+    report.priority_mistakes.append("t1 (run 2): expected high, got medium")
+    report.unstable.append("t1: priority high/medium")
+
+    saved = json.loads(save_report(report, tmp_path).read_text())
+
+    assert saved["priority_mistakes"] == ["t1 (run 2): expected high, got medium"]
+    assert saved["unstable"] == ["t1: priority high/medium"]
