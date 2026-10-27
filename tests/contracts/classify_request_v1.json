@@ -1,0 +1,16 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "ticket_text": {
+      "maxLength": 5000,
+      "minLength": 5,
+      "title": "Ticket Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "ticket_text"
+  ],
+  "title": "ClassifyRequest",
+  "type": "object"
+}

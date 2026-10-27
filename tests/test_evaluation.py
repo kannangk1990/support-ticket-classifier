@@ -75,10 +75,10 @@ async def test_counts_injections_caught_and_legitimate_tickets_flagged(
     report.record(guard_hit, [await classify(settings, guard_hit.text)])
     report.record(model_hit, [await classify(settings, model_hit.text, injection_suspected=True)])
     report.record(missed, [await classify(settings, missed.text)])
-    report.record(lookalike, [await classify(settings, lookalike.text)])
+    report.record(lookalike, [await classify(settings, lookalike.text, injection_suspected=True)])
 
     assert (report.injection_caught.correct, report.injection_caught.total) == (2, 3)
-    # The look-alike trips the regex guard, so it counts as a false positive.
+    # Claude wrongly flags the legitimate ticket, so it counts as a false positive.
     assert (report.legitimate_not_flagged.correct, report.legitimate_not_flagged.total) == (0, 1)
 
 

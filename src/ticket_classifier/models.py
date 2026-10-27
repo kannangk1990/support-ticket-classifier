@@ -42,6 +42,9 @@ class PiiType(StrEnum):
     EMAIL = "email"
     PHONE = "phone"
     CARD = "card"
+    IBAN = "iban"
+    SSN = "ssn"
+    IP_ADDRESS = "ip_address"
 
 
 class ClassificationStatus(StrEnum):
@@ -56,6 +59,7 @@ class ReviewReason(StrEnum):
     UNCATEGORISED = "uncategorised"
     INJECTION_SUSPECTED = "injection_suspected"
     CLASSIFIER_UNAVAILABLE = "classifier_unavailable"
+    PII_IN_OUTPUT = "pii_in_output"
 
 
 class LLMClassification(BaseModel):

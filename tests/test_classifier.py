@@ -197,3 +197,18 @@ async def test_debug_logs_trace_each_pipeline_step(
     assert any("attempt 1 started" in message for message in steps)
     assert any("attempt 1 succeeded" in message for message in steps)
     assert any("category=delivery_issue" in message for message in steps)
+
+
+async def test_personal_data_in_reasoning_is_redacted_and_reviewed(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("DEBUG")
+    llm = FakeLLM([response_with(reasoning="Customer 415-555-0132 reports a late parcel.")])
+
+    result = await TicketClassifier(llm, settings).classify("Where is my parcel?")
+
+    assert result.reasoning == "Customer [PHONE] reports a late parcel."
+    assert ReviewReason.PII_IN_OUTPUT in result.review_reasons
+    assert result.requires_human_review
+    assert "415-555-0132" not in caplog.text
+    assert "personal data in model reasoning redacted pii=phone" in caplog.text

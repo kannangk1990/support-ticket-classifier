@@ -71,3 +71,17 @@ def test_user_message_cannot_close_the_ticket_tag() -> None:
 
     assert message.count("</ticket>") == 1
     assert message.endswith("</ticket>")
+
+
+def test_personal_data_in_model_reasoning_needs_review() -> None:
+    reasons = review_reasons(
+        classification(reasoning="Customer jane@example.com reports a duplicate charge."), 0.7
+    )
+
+    assert ReviewReason.PII_IN_OUTPUT in reasons
+
+
+def test_placeholders_in_model_reasoning_are_not_personal_data() -> None:
+    reasons = review_reasons(classification(reasoning="Customer [EMAIL] was charged twice."), 0.7)
+
+    assert reasons == []
