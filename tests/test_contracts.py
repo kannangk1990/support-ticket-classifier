@@ -21,6 +21,7 @@ from ticket_classifier.prompts import PROMPTS
 # add a new version to PROMPTS and its hash here.
 RELEASED_PROMPT_SHA256: Final = {
     "v1": "ee469c05511ef8d6997af3875f67677de3cd0caa58ace2745ae4e47f67496be9",
+    "v2": "32544effd6bad4b83ffebddc4e2fe6c2935195a41f58b074f014f7f84ef97239",
 }
 
 CONTRACTS: Final = Path(__file__).parent / "contracts"
