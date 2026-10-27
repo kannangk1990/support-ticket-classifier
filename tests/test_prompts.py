@@ -31,5 +31,5 @@ def test_v2_makes_three_day_delivery_delays_high() -> None:
     assert "tracking has not changed for 3 or more days" in prompt
 
 
-def test_default_prompt_stays_v1_until_v2_is_evaluated() -> None:
-    assert Settings(_env_file=None).prompt_version == "v1"
+def test_default_prompt_is_v2() -> None:
+    assert Settings(_env_file=None).prompt_version == "v2"
