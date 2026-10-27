@@ -10,6 +10,7 @@ from ticket_classifier.config import Settings
 from ticket_classifier.llm import (
     LLMConfigurationError,
     LLMOutputError,
+    LLMRefusalError,
     LLMResponse,
     LLMUnavailableError,
 )
@@ -20,6 +21,7 @@ from ticket_classifier.models import (
     ReviewReason,
     Team,
 )
+from ticket_classifier.resilience import CircuitBreaker, CircuitState
 
 
 @pytest.fixture
@@ -212,3 +214,151 @@ async def test_personal_data_in_reasoning_is_redacted_and_reviewed(
     assert result.requires_human_review
     assert "415-555-0132" not in caplog.text
     assert "personal data in model reasoning redacted pii=phone" in caplog.text
+
+
+def state_of(circuit: CircuitBreaker) -> CircuitState:
+    # A function call, so mypy doesn't assume the state is unchanged between asserts.
+    return circuit.state
+
+
+class SleepRecorder:
+    def __init__(self) -> None:
+        self.delays: list[float] = []
+
+    async def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
+
+
+async def test_refusals_are_not_retried(settings: Settings) -> None:
+    llm = FakeLLM([LLMRefusalError("declined"), response_with()])
+
+    result = await TicketClassifier(llm, settings).classify("Where is my parcel?")
+
+    assert len(llm.calls) == 1
+    assert result.status is ClassificationStatus.FALLBACK
+    assert result.attempts == 1
+    assert result.review_reasons == [ReviewReason.CLASSIFIER_UNAVAILABLE]
+
+
+async def test_backs_off_only_before_retrying_transient_failures(settings: Settings) -> None:
+    sleep = SleepRecorder()
+    transient = FakeLLM([LLMUnavailableError("rate limited"), response_with()])
+    bad_output = FakeLLM([LLMOutputError("no structured output"), response_with()])
+
+    await TicketClassifier(transient, settings, sleep=sleep).classify("Where is my parcel?")
+    assert len(sleep.delays) == 1
+    assert 0 <= sleep.delays[0] <= settings.retry_base_delay_seconds
+
+    await TicketClassifier(bad_output, settings, sleep=sleep).classify("Where is my parcel?")
+    assert len(sleep.delays) == 1  # bad output is retried immediately
+
+
+async def test_backoff_grows_exponentially_up_to_the_cap(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("ticket_classifier.classifier.random.uniform", lambda low, high: high)
+    tuned = settings.model_copy(
+        update={"max_attempts": 4, "retry_base_delay_seconds": 4, "retry_max_delay_seconds": 5}
+    )
+    sleep = SleepRecorder()
+    script: list[LLMResponse | BaseException] = [LLMUnavailableError("down")] * 3
+    llm = FakeLLM([*script, response_with()])
+
+    result = await TicketClassifier(llm, tuned, sleep=sleep).classify("Where is my parcel?")
+
+    assert result.status is ClassificationStatus.CLASSIFIED
+    assert sleep.delays == [4, 5, 5]  # 4, then 8 and 16 capped at 5
+
+
+async def test_retry_tells_claude_which_fields_were_invalid(settings: Settings) -> None:
+    llm = FakeLLM([response_with(issue_category="not_a_category"), response_with()])
+
+    await TicketClassifier(llm, settings).classify("Where is my parcel?")
+
+    first, retry = llm.calls[0].user_message, llm.calls[1].user_message
+    assert "rejected" not in first
+    assert "missing or invalid: issue_category" in retry
+    assert "not_a_category" not in retry  # names the field, never echoes the value
+    assert retry.startswith(first)
+
+
+async def test_retry_feedback_never_echoes_invented_field_names(settings: Settings) -> None:
+    llm = FakeLLM([response_with(customer_jane_smith="x", other_field="y"), response_with()])
+
+    await TicketClassifier(llm, settings).classify("Where is my parcel?")
+
+    retry = llm.calls[1].user_message
+    assert "missing or invalid: unexpected fields." in retry
+    assert "jane" not in retry
+
+
+async def test_retry_after_missing_output_asks_for_the_schema(settings: Settings) -> None:
+    llm = FakeLLM([LLMOutputError("no structured output"), response_with()])
+
+    await TicketClassifier(llm, settings).classify("Where is my parcel?")
+
+    assert "did not contain a usable classification" in llm.calls[1].user_message
+
+
+async def test_circuit_opens_after_repeated_outages_and_skips_claude(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    tuned = settings.model_copy(update={"max_attempts": 1, "circuit_failure_threshold": 2})
+    llm = FakeLLM([LLMUnavailableError("down"), LLMUnavailableError("down")])
+    classifier = TicketClassifier(llm, tuned, sleep=SleepRecorder())
+
+    await classifier.classify("Where is my parcel?")
+    await classifier.classify("Where is my parcel?")
+    skipped = await classifier.classify("Where is my parcel?")
+
+    assert len(llm.calls) == 2
+    assert state_of(classifier.circuit_breaker) is CircuitState.OPEN
+    assert skipped.status is ClassificationStatus.FALLBACK
+    assert skipped.attempts == 0
+    assert skipped.review_reasons == [ReviewReason.CLASSIFIER_UNAVAILABLE]
+    assert "circuit open; skipping Claude" in caplog.text
+
+
+async def test_unusable_answers_do_not_trip_the_circuit(settings: Settings) -> None:
+    tuned = settings.model_copy(update={"max_attempts": 1, "circuit_failure_threshold": 1})
+    llm = FakeLLM([LLMOutputError("bad"), LLMRefusalError("declined")])
+    classifier = TicketClassifier(llm, tuned)
+
+    await classifier.classify("Where is my parcel?")
+    await classifier.classify("Where is my parcel?")
+
+    assert state_of(classifier.circuit_breaker) is CircuitState.CLOSED
+
+
+async def test_circuit_recovers_when_the_trial_ticket_succeeds(settings: Settings) -> None:
+    clock = [0.0]
+    circuit = CircuitBreaker(failure_threshold=1, reset_seconds=30, clock=lambda: clock[0])
+    tuned = settings.model_copy(update={"max_attempts": 1})
+    llm = FakeLLM([LLMUnavailableError("down"), response_with(), response_with()])
+    classifier = TicketClassifier(llm, tuned, circuit_breaker=circuit)
+
+    await classifier.classify("Where is my parcel?")
+    assert state_of(circuit) is CircuitState.OPEN
+    clock[0] = 30
+    trial = await classifier.classify("Where is my parcel?")
+    after = await classifier.classify("Where is my parcel?")
+
+    assert trial.status is ClassificationStatus.CLASSIFIED
+    assert after.status is ClassificationStatus.CLASSIFIED
+    assert state_of(circuit) is CircuitState.CLOSED
+
+
+async def test_configuration_error_releases_the_trial_slot(settings: Settings) -> None:
+    clock = [0.0]
+    circuit = CircuitBreaker(failure_threshold=1, reset_seconds=30, clock=lambda: clock[0])
+    tuned = settings.model_copy(update={"max_attempts": 1})
+    llm = FakeLLM([LLMUnavailableError("down"), LLMConfigurationError("API key set")])
+    classifier = TicketClassifier(llm, tuned, circuit_breaker=circuit)
+    await classifier.classify("Where is my parcel?")
+    clock[0] = 30
+
+    with pytest.raises(LLMConfigurationError):
+        await classifier.classify("Where is my parcel?")
+
+    clock[0] = 60
+    assert circuit.allow_request()  # not stuck waiting on a trial that never finished

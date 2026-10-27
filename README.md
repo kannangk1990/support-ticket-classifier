@@ -28,7 +28,7 @@ ticket ──▶ redact PII ──▶ injection pre-check ──▶ Claude (stru
 | Privacy | Emails, phone numbers, Luhn-valid card numbers, checksum-valid IBANs, US SSNs and IP addresses are replaced with placeholders **before** anything is sent to Claude. Logs record ticket IDs and PII *types*, never ticket text. If Claude's reasoning still contains personal data, it is redacted and the ticket goes to human review. |
 | Prompt injection | Ticket text is passed as delimited data. A cheap regex pre-check stops blatant attacks before they cost a call. Claude reports `injection_suspected` for subtler ones, which forces human review. |
 | Consistent routing | Claude picks only the category, priority and sentiment. The team and the human-review decision come from fixed rules in [`routing.py`](src/ticket_classifier/routing.py), so they can't contradict each other. |
-| Reliability | Output is validated with Pydantic. A bad or missing result is retried once, then replaced by a safe fallback that goes to a human. A misconfigured backend fails loudly instead of being masked. |
+| Reliability | Output is validated with Pydantic. Invalid output is retried with a note naming the bad fields (never their values); outages are retried after a random exponential backoff; refusals aren't retried. Failures end in a safe fallback that goes to a human. A circuit breaker skips Claude for a cool-down after repeated outages instead of making every ticket wait for timeouts. A misconfigured backend fails loudly instead of being masked. |
 | Billing safety | The backend refuses to start if `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or a cloud-provider switch is set. It also checks that Claude Code reports subscription auth (`apiKeySource: none`) before each call. |
 | No tool access | Claude runs with no tools and none of your local Claude Code settings, so a ticket can't make it read files or run commands. |
 | Measurable | `evals/tickets.jsonl` holds labelled tickets, and `ticket-classifier eval` reports accuracy for them. |
@@ -91,6 +91,9 @@ Settings come from environment variables or a `.env` file. Copy [`.env.example`]
 | `TICKET_MAX_ATTEMPTS` | `2` | Attempts before the safe fallback |
 | `TICKET_MAX_CONCURRENCY` | `2` | Parallel Claude sessions (subscriptions are rate limited) |
 | `TICKET_REVIEW_CONFIDENCE_THRESHOLD` | `0.7` | Below this, a human reviews the ticket |
+| `TICKET_RETRY_BASE_DELAY_SECONDS` / `TICKET_RETRY_MAX_DELAY_SECONDS` | `1` / `10` | Random backoff before retrying a transient failure, doubling per attempt up to the cap |
+| `TICKET_CIRCUIT_FAILURE_THRESHOLD` | `5` | Tickets in a row that can't reach Claude before the circuit opens |
+| `TICKET_CIRCUIT_RESET_SECONDS` | `30` | How long an open circuit sends tickets straight to human review before trying Claude again |
 | `TICKET_HOST` / `TICKET_PORT` | `127.0.0.1` / `8000` | Server bind address |
 
 ## Development

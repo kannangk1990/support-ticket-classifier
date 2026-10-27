@@ -11,6 +11,7 @@ from tests.fakes import VALID_OUTPUT
 from ticket_classifier.llm import (
     LLMConfigurationError,
     LLMOutputError,
+    LLMRefusalError,
     LLMUnavailableError,
     claude_code,
 )
@@ -143,4 +144,11 @@ async def test_missing_result_is_unavailable(monkeypatch: pytest.MonkeyPatch) ->
     fake_query(monkeypatch, init_message())
 
     with pytest.raises(LLMUnavailableError):
+        await complete()
+
+
+async def test_refusal_maps_to_a_refusal_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_query(monkeypatch, init_message(), result_message(is_error=True, stop_reason="refusal"))
+
+    with pytest.raises(LLMRefusalError):
         await complete()

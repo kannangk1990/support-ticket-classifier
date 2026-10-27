@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     max_concurrency: int = Field(default=2, ge=1, le=10)
     review_confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
 
+    # Backoff before retrying a transient failure: a random wait up to base * 2^(n-1),
+    # capped, so parallel tickets don't retry in lockstep against a struggling backend.
+    retry_base_delay_seconds: float = Field(default=1.0, ge=0.0)
+    retry_max_delay_seconds: float = Field(default=10.0, ge=0.0)
+    # After this many tickets in a row fail to reach Claude, stop calling it for
+    # circuit_reset_seconds and send tickets straight to human review.
+    circuit_failure_threshold: int = Field(default=5, ge=1)
+    circuit_reset_seconds: float = Field(default=30.0, gt=0)
+
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
     log_level: LogLevel = "INFO"
