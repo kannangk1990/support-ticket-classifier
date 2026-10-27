@@ -1,0 +1,59 @@
+# Prometheus alerting rules for the ticket classifier. Load from prometheus.yml
+# (see prometheus.example.yml) and route them with Alertmanager.
+# tests/test_metrics.py checks that every metric used here exists, so the rules
+# can't silently drift from the code.
+groups:
+  - name: ticket-classifier
+    rules:
+      - alert: TicketClassifierDown
+        expr: up{job="ticket-classifier"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Ticket classifier is not responding to scrapes.
+
+      - alert: TicketClassifierCircuitOpen
+        expr: ticket_classifier_circuit_state == 2
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Claude is unreachable; tickets are going straight to human review.
+
+      - alert: TicketClassifierHighFallbackRate
+        expr: |
+          sum(rate(ticket_classifier_tickets_total{status="fallback"}[10m]))
+            / sum(rate(ticket_classifier_tickets_total[10m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 20% of tickets are falling back to human review.
+
+      - alert: TicketClassifierHighInjectionRate
+        expr: |
+          sum(rate(ticket_classifier_review_reasons_total{reason="injection_suspected"}[10m]))
+            / sum(rate(ticket_classifier_tickets_total[10m])) > 0.3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 30% of tickets look like prompt-injection attempts.
+
+      - alert: TicketClassifierSlow
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(ticket_classifier_duration_seconds_bucket[10m]))) > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 95th percentile classification time is above 30 seconds.
+
+      - alert: TicketClassifierStorageErrors
+        expr: increase(ticket_classifier_storage_errors_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Results are failing to save; check disk space and the database file.

@@ -3,12 +3,15 @@
 import asyncio
 import logging
 import random
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Final
 
 from pydantic import ValidationError
 
+from ticket_classifier import metrics
+from ticket_classifier.alerts import AlertMonitor
 from ticket_classifier.config import Settings
 from ticket_classifier.guard import check_injection
 from ticket_classifier.llm import (
@@ -20,6 +23,7 @@ from ticket_classifier.llm import (
     LLMUnavailableError,
     StructuredLLM,
 )
+from ticket_classifier.metrics import AttemptOutcome
 from ticket_classifier.models import (
     ClassificationStatus,
     IssueCategory,
@@ -34,12 +38,17 @@ from ticket_classifier.models import (
 )
 from ticket_classifier.pii import redact_pii
 from ticket_classifier.prompts import build_retry_note, build_user_message, get_prompt
-from ticket_classifier.resilience import CircuitBreaker
+from ticket_classifier.resilience import CircuitBreaker, CircuitState
 from ticket_classifier.routing import review_reasons, team_for
 
 logger = logging.getLogger(__name__)
 
 _FALLBACK_CATEGORY: Final = IssueCategory.OTHER
+_CIRCUIT_GAUGE_VALUES: Final = {
+    CircuitState.CLOSED: 0,
+    CircuitState.HALF_OPEN: 1,
+    CircuitState.OPEN: 2,
+}
 
 
 class _ClassificationFailedError(Exception):
@@ -70,6 +79,11 @@ class TicketClassifier:
             failure_threshold=settings.circuit_failure_threshold,
             reset_seconds=settings.circuit_reset_seconds,
         )
+        self.alerts = AlertMonitor(settings)
+        # The process serves one classifier, so the gauge follows the latest one built.
+        metrics.CIRCUIT_STATE.set_function(
+            lambda: _CIRCUIT_GAUGE_VALUES[self.circuit_breaker.state]
+        )
 
     async def classify(self, ticket_text: str) -> TicketResult:
         """Classify one ticket.
@@ -78,6 +92,13 @@ class TicketClassifier:
         the result is a safe fallback routed to a human. LLMConfigurationError is not
         caught, because a misconfigured backend must be fixed, not silently masked.
         """
+        started = time.perf_counter()
+        result = await self._classify(ticket_text)
+        metrics.record_result(result, time.perf_counter() - started)
+        self.alerts.observe(result, self.circuit_breaker.state)
+        return result
+
+    async def _classify(self, ticket_text: str) -> TicketResult:
         ticket_id = uuid.uuid4().hex
         redaction = redact_pii(ticket_text)
         pii = list(redaction.found)
@@ -207,6 +228,7 @@ class TicketClassifier:
                         schema=self._schema,
                     )
                 classification = LLMClassification.model_validate(response.data)
+                metrics.ATTEMPTS.labels(outcome=AttemptOutcome.SUCCESS).inc()
                 logger.debug(
                     "ticket=%s attempt %d succeeded duration_ms=%d tokens_in=%d tokens_out=%d",
                     ticket_id,
@@ -217,19 +239,24 @@ class TicketClassifier:
                 )
                 return classification, response, attempt
             except TimeoutError:
+                metrics.ATTEMPTS.labels(outcome=AttemptOutcome.UNAVAILABLE).inc()
                 last_error = LLMUnavailableError(
                     f"Timed out after {self._settings.llm_timeout_seconds}s"
                 )
             except ValidationError as exc:
+                metrics.ATTEMPTS.labels(outcome=AttemptOutcome.INVALID_OUTPUT).inc()
                 last_error = LLMOutputError(f"Output failed validation: {exc.error_count()} errors")
                 user_message = f"{base_message}\n\n{build_retry_note(_invalid_fields(exc))}"
             except LLMRefusalError as exc:
+                metrics.ATTEMPTS.labels(outcome=AttemptOutcome.REFUSED).inc()
                 logger.warning("ticket=%s attempt %d refused; not retrying", ticket_id, attempt)
                 raise _ClassificationFailedError(exc, attempt) from exc
             except LLMOutputError as exc:
+                metrics.ATTEMPTS.labels(outcome=AttemptOutcome.INVALID_OUTPUT).inc()
                 last_error = exc
                 user_message = f"{base_message}\n\n{build_retry_note([])}"
             except LLMUnavailableError as exc:
+                metrics.ATTEMPTS.labels(outcome=AttemptOutcome.UNAVAILABLE).inc()
                 last_error = exc
             logger.warning("ticket=%s attempt %d failed: %s", ticket_id, attempt, last_error)
 

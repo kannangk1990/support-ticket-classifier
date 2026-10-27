@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Annotated, Final
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, ConfigDict, Field
 
 from ticket_classifier import __version__
@@ -15,6 +16,7 @@ from ticket_classifier.classifier import TicketClassifier
 from ticket_classifier.config import Settings, get_settings
 from ticket_classifier.llm import LLMConfigurationError
 from ticket_classifier.llm.claude_code import ClaudeCodeClient, ensure_subscription_auth
+from ticket_classifier.metrics import REGISTRY
 from ticket_classifier.models import TicketResult
 from ticket_classifier.service import StorageDisabledError, TicketService
 from ticket_classifier.storage import TicketStore
@@ -74,6 +76,10 @@ def create_app(
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
         return FileResponse(_INDEX_HTML)
+
+    @app.get("/metrics", include_in_schema=False)
+    async def prometheus_metrics() -> Response:
+        return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

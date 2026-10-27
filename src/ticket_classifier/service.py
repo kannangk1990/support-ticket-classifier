@@ -8,6 +8,7 @@ import asyncio
 import logging
 import sqlite3
 
+from ticket_classifier import metrics
 from ticket_classifier.classifier import TicketClassifier
 from ticket_classifier.models import ClassificationStatus, TicketResult
 from ticket_classifier.storage import DuplicateExternalIdError, TicketStore
@@ -27,6 +28,7 @@ class TicketService:
     async def classify(self, ticket_text: str, external_id: str | None = None) -> TicketResult:
         existing = await self._find_external(external_id)
         if existing is not None and existing.status is not ClassificationStatus.FALLBACK:
+            metrics.STORED_HITS.inc()
             logger.info(
                 "ticket=%s returning stored result external_id=%s",
                 existing.ticket_id,
@@ -82,6 +84,7 @@ class TicketService:
         try:
             return await asyncio.to_thread(self._store.get_by_external_id, external_id)
         except sqlite3.Error:
+            metrics.STORAGE_ERRORS.inc()
             logger.exception("lookup failed for external_id=%s; classifying again", external_id)
             return None
 
@@ -104,5 +107,6 @@ class TicketService:
                 return winner
             logger.error("ticket=%s duplicate external_id but no stored row", result.ticket_id)
         except sqlite3.Error:
+            metrics.STORAGE_ERRORS.inc()
             logger.exception("ticket=%s could not be stored", result.ticket_id)
         return result
