@@ -2,6 +2,11 @@
 
 Each row holds the full TicketResult as JSON, which includes the redacted ticket text so
 fallback tickets can be reprocessed. The original, unredacted text is never stored.
+
+Redacted text can still hold personal data the regexes miss (names, addresses), so
+purge_text_before() erases it, and Claude's reasoning, from old rows while keeping the
+classification. secure_delete makes SQLite overwrite the old bytes instead of leaving them
+in free pages of the file.
 """
 
 import sqlite3
@@ -14,6 +19,7 @@ from typing import Final
 from ticket_classifier.models import ClassificationStatus, TicketResult
 
 SCHEMA_VERSION: Final = 1
+PURGED_TEXT: Final = "[PURGED]"
 
 _SCHEMA: Final = """
 CREATE TABLE IF NOT EXISTS tickets (
@@ -46,6 +52,7 @@ class TicketStore:
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         with closing(sqlite3.connect(self._path, timeout=10)) as conn, conn:
+            conn.execute("PRAGMA secure_delete = ON")
             yield conn
 
     def save(self, result: TicketResult) -> None:
@@ -82,12 +89,47 @@ class TicketStore:
         return self._one("SELECT result_json FROM tickets WHERE external_id = ?", external_id)
 
     def list_fallbacks(self, limit: int | None = None) -> list[TicketResult]:
+        """Fallback tickets that can still be reprocessed (their text has not been purged)."""
         with self._transaction() as conn:
             rows = conn.execute(
-                "SELECT result_json FROM tickets WHERE status = ? ORDER BY created_at LIMIT ?",
-                (ClassificationStatus.FALLBACK.value, -1 if limit is None else limit),
+                "SELECT result_json FROM tickets WHERE status = ? ORDER BY created_at",
+                (ClassificationStatus.FALLBACK.value,),
             ).fetchall()
-        return [TicketResult.model_validate_json(row[0]) for row in rows]
+        results = [TicketResult.model_validate_json(row[0]) for row in rows]
+        pending = [r for r in results if r.redacted_text != PURGED_TEXT]
+        return pending if limit is None else pending[:limit]
+
+    def purge_text_before(self, cutoff: datetime) -> int:
+        """Erase ticket text and Claude's reasoning from rows created before cutoff, keeping
+        the classification. Returns how many rows changed; already purged rows don't count."""
+        now = datetime.now(UTC).isoformat()
+        changed = 0
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT ticket_id, result_json FROM tickets WHERE created_at < ?",
+                (cutoff.astimezone(UTC).isoformat(),),
+            ).fetchall()
+            for ticket_id, raw in rows:
+                result = TicketResult.model_validate_json(raw)
+                if result.redacted_text == PURGED_TEXT and result.reasoning == PURGED_TEXT:
+                    continue
+                purged = result.model_copy(
+                    update={"redacted_text": PURGED_TEXT, "reasoning": PURGED_TEXT}
+                )
+                conn.execute(
+                    "UPDATE tickets SET result_json = ?, updated_at = ? WHERE ticket_id = ?",
+                    (purged.model_dump_json(), now, ticket_id),
+                )
+                changed += 1
+        return changed
+
+    def delete_before(self, cutoff: datetime) -> int:
+        """Delete whole rows created before cutoff. Returns how many were deleted."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "DELETE FROM tickets WHERE created_at < ?", (cutoff.astimezone(UTC).isoformat(),)
+            )
+        return cursor.rowcount
 
     def _one(self, query: str, key: str) -> TicketResult | None:
         with self._transaction() as conn:

@@ -51,6 +51,7 @@ uv run ticket-classifier classify "I was charged twice for order #4512"
 uv run ticket-classifier serve            # http://127.0.0.1:8000 (demo page + API)
 uv run ticket-classifier eval             # accuracy on evals/tickets.jsonl
 uv run ticket-classifier reprocess        # re-run stored tickets that fell back
+uv run ticket-classifier purge --older-than-days 90   # erase text of old stored tickets
 ```
 
 Read from stdin with `classify -`. To see the API schema, run the server and open
@@ -225,8 +226,12 @@ The set is small and hand-written. Add real (anonymised) tickets before relying 
 
 ## Limitations
 
-- Stored results are kept until you delete `data/tickets.db`; there is no retention policy
-  yet. They contain redacted text only, but treat the file as sensitive.
+- Stored redacted text can still contain personal data the regexes miss, such as names.
+  Run `purge --older-than-days N` regularly (e.g. from cron) to erase the ticket text and
+  Claude's reasoning from older records. Category, team, priority, review reasons and
+  timings are kept. Add `--delete` to remove whole records. Purged tickets can't be
+  reprocessed. The erased bytes are overwritten in the file (SQLite `secure_delete`), but
+  copies in backups are not, so treat backups of `data/tickets.db` as sensitive too.
 
 - PII redaction is regex-based. It doesn't catch names, postal addresses, dates of birth
   or non-IBAN account numbers in free text.

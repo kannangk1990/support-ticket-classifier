@@ -1,10 +1,11 @@
-"""Command-line entry point: ``ticket-classifier {classify,serve,eval,reprocess}``."""
+"""Command-line entry point: ``ticket-classifier {classify,serve,eval,reprocess,purge}``."""
 
 import argparse
 import asyncio
 import logging
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ticket_classifier.classifier import TicketClassifier
@@ -34,6 +35,18 @@ def _classify(settings: Settings, text: str, external_id: str | None) -> int:
         text = sys.stdin.read()
     result = asyncio.run(_build_service(settings).classify(text, external_id))
     print(result.model_dump_json(indent=2))
+    return 0
+
+
+def _purge(settings: Settings, older_than_days: int, delete: bool) -> int:
+    store = TicketStore(settings.db_path)
+    cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
+    if delete:
+        count = store.delete_before(cutoff)
+        print(f"Deleted {count} ticket(s) older than {older_than_days} day(s).")
+    else:
+        count = store.purge_text_before(cutoff)
+        print(f"Erased text from {count} ticket(s) older than {older_than_days} day(s).")
     return 0
 
 
@@ -90,6 +103,14 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--results-dir", type=Path, default=DEFAULT_EVAL_RESULTS)
     reprocess = commands.add_parser("reprocess", help="re-run stored tickets that fell back")
     reprocess.add_argument("--limit", type=int, default=None, help="at most N tickets")
+
+    purge = commands.add_parser(
+        "purge", help="erase the text of old stored tickets (or delete them with --delete)"
+    )
+    purge.add_argument("--older-than-days", type=int, required=True)
+    purge.add_argument(
+        "--delete", action="store_true", help="delete whole records instead of only their text"
+    )
     return parser
 
 
@@ -104,6 +125,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "classify":
             return _classify(settings, args.text, args.external_id)
+        if args.command == "purge":
+            if args.older_than_days < 1:
+                print("error: --older-than-days must be at least 1", file=sys.stderr)
+                return 2
+            return _purge(settings, args.older_than_days, args.delete)
         if args.command == "reprocess":
             if args.limit is not None and args.limit < 1:
                 print("error: --limit must be at least 1", file=sys.stderr)
