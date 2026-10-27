@@ -234,3 +234,31 @@ def test_saved_report_includes_the_named_tickets(settings: Settings, tmp_path: P
 
     assert saved["priority_mistakes"] == ["t1 (run 2): expected high, got medium"]
     assert saved["unstable"] == ["t1: priority high/medium"]
+
+
+async def test_lists_review_mistakes_with_the_reasons(settings: Settings) -> None:
+    unexpected = LabelledTicket(id="vague", text="Parcel late.", category=IssueCategory.DELIVERY)
+    missed = LabelledTicket(
+        id="fraud", text="Parcel late.", category=IssueCategory.DELIVERY, expect_review=True
+    )
+    report = report_for(settings)
+
+    report.record(unexpected, [await classify(settings, unexpected.text, confidence=0.4)])
+    report.record(missed, [await classify(settings, missed.text)])
+
+    assert report.review_mistakes == [
+        "vague (run 1): expected no review, got review (low_confidence)",
+        "fraud (run 1): expected review, got no review",
+    ]
+    assert "Review mistakes:\n  - vague (run 1)" in report.render()
+
+
+def test_saved_report_includes_review_mistakes(settings: Settings, tmp_path: Path) -> None:
+    report = report_for(settings)
+    report.review_mistakes.append("t1 (run 1): expected no review, got review (low_confidence)")
+
+    saved = json.loads(save_report(report, tmp_path).read_text())
+
+    assert saved["review_mistakes"] == [
+        "t1 (run 1): expected no review, got review (low_confidence)"
+    ]

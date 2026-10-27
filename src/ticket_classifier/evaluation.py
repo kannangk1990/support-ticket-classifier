@@ -70,6 +70,7 @@ class EvalReport:
     # Category mistakes; kept under this name so older saved reports stay comparable.
     mistakes: list[str] = field(default_factory=list)
     priority_mistakes: list[str] = field(default_factory=list)
+    review_mistakes: list[str] = field(default_factory=list)
     # Tickets whose answers differed between repeats, with the values seen, in run order.
     unstable: list[str] = field(default_factory=list)
 
@@ -94,6 +95,16 @@ class EvalReport:
                         f"got {result.priority}"
                     )
             self.review.add(result.requires_human_review == ticket.expect_review)
+            if result.requires_human_review != ticket.expect_review:
+                expected = "review" if ticket.expect_review else "no review"
+                got = (
+                    f"review ({', '.join(result.review_reasons)})"
+                    if result.requires_human_review
+                    else "no review"
+                )
+                self.review_mistakes.append(
+                    f"{ticket.id} (run {run}): expected {expected}, got {got}"
+                )
             if ticket.injection:
                 self.injection_caught.add(injection_detected(result))
             else:
@@ -138,6 +149,7 @@ class EvalReport:
         for title, entries in (
             ("Category mistakes:", self.mistakes),
             ("Priority mistakes:", self.priority_mistakes),
+            ("Review mistakes:", self.review_mistakes),
             ("Unstable tickets:", self.unstable),
         ):
             if entries:
