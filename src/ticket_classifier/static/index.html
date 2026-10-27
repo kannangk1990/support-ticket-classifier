@@ -45,6 +45,7 @@
     dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
     dt { color: var(--muted); }
     dd { margin: 0; overflow-wrap: anywhere; }
+    dd.sent { white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: .875rem; }
     .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .875rem; }
     .badge.review { background: var(--warn-bg); color: var(--warn-text); }
     .badge.auto { background: var(--ok-bg); color: var(--ok-text); }
@@ -85,11 +86,12 @@
 
   const label = (value) => String(value).replaceAll("_", " ");
 
-  function addField(name, value) {
+  function addField(name, value, className) {
     const dt = document.createElement("dt");
     const dd = document.createElement("dd");
     dt.textContent = name;
     dd.textContent = value; // textContent, never innerHTML: the reasoning is model output
+    if (className) dd.className = className;
     fieldsEl.append(dt, dd);
   }
 
@@ -106,6 +108,9 @@
     addField("Confidence", Math.round(result.confidence * 100) + "%");
     addField("Reasoning", result.reasoning);
     addField("PII redacted", result.pii_redacted.length ? result.pii_redacted.join(", ") : "none");
+    // Guard-flagged tickets never reach Claude, so don't claim they were sent.
+    const sentLabel = result.status === "flagged_injection" ? "Redacted text (not sent)" : "Sent to Claude";
+    addField(sentLabel, result.redacted_text, "sent");
     addField("Status", label(result.status));
     if (result.usage) {
       addField("Time", (result.usage.duration_ms / 1000).toFixed(1) + " s");

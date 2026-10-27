@@ -101,6 +101,9 @@ class TicketResult(BaseModel):
     requires_human_review: bool
     review_reasons: list[ReviewReason]
     pii_redacted: list[PiiType]
+    # Returned only to the caller so they can see exactly what Claude was given; it is
+    # never logged.
+    redacted_text: str
     prompt_version: str
     model: str | None
     attempts: int

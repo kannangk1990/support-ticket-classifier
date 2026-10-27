@@ -55,6 +55,13 @@ class TicketClassifier:
         ticket_id = uuid.uuid4().hex
         redaction = redact_pii(ticket_text)
         pii = list(redaction.found)
+        # Step logs carry only IDs, PII types and sizes, so DEBUG output is safe to share.
+        logger.debug(
+            "ticket=%s received chars=%d redacted pii=%s",
+            ticket_id,
+            len(ticket_text),
+            ",".join(pii) or "none",
+        )
 
         guard = check_injection(redaction.text)
         if guard.flagged:
@@ -65,8 +72,10 @@ class TicketClassifier:
                 reason=ReviewReason.INJECTION_SUSPECTED,
                 reasoning="Ticket matched a prompt-injection pattern; routed to a human.",
                 pii=pii,
+                redacted_text=redaction.text,
                 attempts=0,
             )
+        logger.debug("ticket=%s guard passed", ticket_id)
 
         try:
             classification, response, attempts = await self._classify_with_retry(
@@ -80,6 +89,7 @@ class TicketClassifier:
                 reason=ReviewReason.CLASSIFIER_UNAVAILABLE,
                 reasoning="Automatic classification failed; routed to a human.",
                 pii=pii,
+                redacted_text=redaction.text,
                 attempts=self._settings.max_attempts,
             )
 
@@ -105,6 +115,7 @@ class TicketClassifier:
             requires_human_review=bool(reasons),
             review_reasons=reasons,
             pii_redacted=pii,
+            redacted_text=redaction.text,
             prompt_version=self._prompt.version,
             model=response.model,
             attempts=attempts,
@@ -123,6 +134,7 @@ class TicketClassifier:
         last_error: LLMError | None = None
 
         for attempt in range(1, self._settings.max_attempts + 1):
+            logger.debug("ticket=%s attempt %d started", ticket_id, attempt)
             try:
                 async with self._semaphore, asyncio.timeout(self._settings.llm_timeout_seconds):
                     response = await self._llm.complete(
@@ -130,7 +142,16 @@ class TicketClassifier:
                         user_message=user_message,
                         schema=self._schema,
                     )
-                return LLMClassification.model_validate(response.data), response, attempt
+                classification = LLMClassification.model_validate(response.data)
+                logger.debug(
+                    "ticket=%s attempt %d succeeded duration_ms=%d tokens_in=%d tokens_out=%d",
+                    ticket_id,
+                    attempt,
+                    response.usage.duration_ms,
+                    response.usage.input_tokens,
+                    response.usage.output_tokens,
+                )
+                return classification, response, attempt
             except TimeoutError:
                 last_error = LLMUnavailableError(
                     f"Timed out after {self._settings.llm_timeout_seconds}s"
@@ -152,6 +173,7 @@ class TicketClassifier:
         reason: ReviewReason,
         reasoning: str,
         pii: list[PiiType],
+        redacted_text: str,
         attempts: int,
     ) -> TicketResult:
         return TicketResult(
@@ -166,6 +188,7 @@ class TicketClassifier:
             requires_human_review=True,
             review_reasons=[reason],
             pii_redacted=pii,
+            redacted_text=redacted_text,
             prompt_version=self._prompt.version,
             model=None,
             attempts=attempts,
