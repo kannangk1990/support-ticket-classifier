@@ -1,4 +1,4 @@
-"""Command-line entry point: ``ticket-classifier {classify,serve,eval}``."""
+"""Command-line entry point: ``ticket-classifier {classify,serve,eval,reprocess}``."""
 
 import argparse
 import asyncio
@@ -12,6 +12,9 @@ from ticket_classifier.config import Settings, get_settings
 from ticket_classifier.evaluation import load_dataset, run_eval, save_report
 from ticket_classifier.llm import LLMConfigurationError
 from ticket_classifier.llm.claude_code import ClaudeCodeClient
+from ticket_classifier.models import ClassificationStatus
+from ticket_classifier.service import TicketService
+from ticket_classifier.storage import TicketStore
 
 DEFAULT_EVAL_DATASET = Path("evals/tickets.jsonl")
 DEFAULT_EVAL_RESULTS = Path("evals/results")
@@ -22,11 +25,24 @@ def _build_classifier(settings: Settings) -> TicketClassifier:
     return TicketClassifier(llm, settings)
 
 
-def _classify(settings: Settings, text: str) -> int:
+def _build_service(settings: Settings) -> TicketService:
+    return TicketService(_build_classifier(settings), TicketStore(settings.db_path))
+
+
+def _classify(settings: Settings, text: str, external_id: str | None) -> int:
     if text == "-":
         text = sys.stdin.read()
-    result = asyncio.run(_build_classifier(settings).classify(text))
+    result = asyncio.run(_build_service(settings).classify(text, external_id))
     print(result.model_dump_json(indent=2))
+    return 0
+
+
+def _reprocess(settings: Settings, limit: int | None) -> int:
+    outcomes = asyncio.run(_build_service(settings).reprocess_fallbacks(limit))
+    for before, after in outcomes:
+        print(f"{before.ticket_id}: {before.status} -> {after.status}")
+    recovered = sum(after.status is ClassificationStatus.CLASSIFIED for _, after in outcomes)
+    print(f"Reprocessed {len(outcomes)} fallback ticket(s); {recovered} now classified.")
     return 0
 
 
@@ -59,6 +75,9 @@ def _parser() -> argparse.ArgumentParser:
 
     classify = commands.add_parser("classify", help="classify one ticket and print JSON")
     classify.add_argument("text", help="ticket text, or '-' to read from stdin")
+    classify.add_argument(
+        "--external-id", default=None, help="your ID for the ticket; repeats reuse the result"
+    )
 
     commands.add_parser("serve", help="run the HTTP API and demo page")
 
@@ -69,6 +88,8 @@ def _parser() -> argparse.ArgumentParser:
         "--repeat", type=int, default=1, help="run each ticket N times to measure consistency"
     )
     evaluate.add_argument("--results-dir", type=Path, default=DEFAULT_EVAL_RESULTS)
+    reprocess = commands.add_parser("reprocess", help="re-run stored tickets that fell back")
+    reprocess.add_argument("--limit", type=int, default=None, help="at most N tickets")
     return parser
 
 
@@ -82,7 +103,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         if args.command == "classify":
-            return _classify(settings, args.text)
+            return _classify(settings, args.text, args.external_id)
+        if args.command == "reprocess":
+            if args.limit is not None and args.limit < 1:
+                print("error: --limit must be at least 1", file=sys.stderr)
+                return 2
+            return _reprocess(settings, args.limit)
         if args.command == "eval":
             if args.repeat < 1:
                 print("error: --repeat must be at least 1", file=sys.stderr)

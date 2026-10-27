@@ -1,6 +1,7 @@
 """Runtime settings, read from environment variables prefixed with ``TICKET_`` (or a .env file)."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -33,6 +34,9 @@ class Settings(BaseSettings):
     # circuit_reset_seconds and send tickets straight to human review.
     circuit_failure_threshold: int = Field(default=5, ge=1)
     circuit_reset_seconds: float = Field(default=30.0, gt=0)
+
+    # Classification results, including redacted ticket text. Never the original text.
+    db_path: Path = Path("data/tickets.db")
 
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)

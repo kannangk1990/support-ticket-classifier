@@ -50,6 +50,7 @@ uv sync                                   # create .venv and install locked depe
 uv run ticket-classifier classify "I was charged twice for order #4512"
 uv run ticket-classifier serve            # http://127.0.0.1:8000 (demo page + API)
 uv run ticket-classifier eval             # accuracy on evals/tickets.jsonl
+uv run ticket-classifier reprocess        # re-run stored tickets that fell back
 ```
 
 Read from stdin with `classify -`. To see the API schema, run the server and open
@@ -67,6 +68,12 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/classify \
   -H 'content-type: application/json' \
   -d '{"ticket_text": "My parcel has said out for delivery for 6 days"}'
 ```
+
+Pass an optional `external_id` (your helpdesk's ticket ID: letters, digits, `.`, `_`, `:`,
+`-`; up to 128 characters) to make the call idempotent. A repeat returns the stored result
+without calling Claude, unless the stored result was a fallback, in which case the ticket
+is classified again under the same `ticket_id`. Fetch a stored result with
+`GET /api/v1/tickets/{ticket_id}`.
 
 The response includes:
 - `status`: one of `classified`, `flagged_injection` or `fallback`
@@ -94,6 +101,7 @@ Settings come from environment variables or a `.env` file. Copy [`.env.example`]
 | `TICKET_RETRY_BASE_DELAY_SECONDS` / `TICKET_RETRY_MAX_DELAY_SECONDS` | `1` / `10` | Random backoff before retrying a transient failure, doubling per attempt up to the cap |
 | `TICKET_CIRCUIT_FAILURE_THRESHOLD` | `5` | Tickets in a row that can't reach Claude before the circuit opens |
 | `TICKET_CIRCUIT_RESET_SECONDS` | `30` | How long an open circuit sends tickets straight to human review before trying Claude again |
+| `TICKET_DB_PATH` | `data/tickets.db` | SQLite file for results and redacted text (gitignored) |
 | `TICKET_HOST` / `TICKET_PORT` | `127.0.0.1` / `8000` | Server bind address |
 
 ## Development
@@ -129,6 +137,9 @@ src/ticket_classifier/
   prompts.py         versioned system prompts
   routing.py         category → team map and review rules
   models.py          enums and Pydantic models
+  service.py         idempotent classify, lookup and reprocess on top of storage
+  storage.py         SQLite result store (redacted text only)
+  resilience.py      circuit breaker
   api.py, cli.py     FastAPI app and CLI
   evaluation.py      accuracy measurement
 evals/tickets.jsonl  labelled tickets
@@ -162,6 +173,9 @@ On 2026-10-26 the eval ran on `evals/tickets.jsonl` (22 tickets) with `claude-op
 The set is small and hand-written. Add real (anonymised) tickets before relying on these numbers.
 
 ## Limitations
+
+- Stored results are kept until you delete `data/tickets.db`; there is no retention policy
+  yet. They contain redacted text only, but treat the file as sensitive.
 
 - PII redaction is regex-based. It doesn't catch names, postal addresses, dates of birth
   or non-IBAN account numbers in free text.
