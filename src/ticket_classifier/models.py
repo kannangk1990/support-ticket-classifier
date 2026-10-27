@@ -95,6 +95,8 @@ class TicketResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     ticket_id: str
+    # The caller's own ID for the ticket (e.g. from the helpdesk), if one was supplied.
+    external_id: str | None = None
     status: ClassificationStatus
     issue_category: IssueCategory
     assigned_team: Team

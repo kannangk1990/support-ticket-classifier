@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,6 +9,7 @@ from ticket_classifier.api import create_app
 from ticket_classifier.classifier import TicketClassifier
 from ticket_classifier.config import Settings
 from ticket_classifier.llm import LLMConfigurationError, LLMResponse
+from ticket_classifier.storage import TicketStore
 
 
 def client_for(script: list[LLMResponse | BaseException]) -> Iterator[TestClient]:
@@ -71,3 +73,38 @@ def test_index_shows_the_text_sent_to_claude(client: TestClient) -> None:
 
     assert "Sent to Claude" in index
     assert "result.redacted_text" in index
+
+
+def client_with_store(store: TicketStore | None) -> Iterator[TestClient]:
+    settings = Settings(_env_file=None)
+    classifier = TicketClassifier(FakeLLM([response_with()]), settings)
+    with TestClient(create_app(settings, classifier, store)) as client:
+        yield client
+
+
+def test_stored_ticket_can_be_fetched_by_id(tmp_path: Path) -> None:
+    for client in client_with_store(TicketStore(tmp_path / "t.db")):
+        created = client.post(
+            "/api/v1/classify", json={"ticket_text": "My parcel is late.", "external_id": "ZD-7"}
+        ).json()
+
+        fetched = client.get(f"/api/v1/tickets/{created['ticket_id']}")
+
+        assert fetched.status_code == 200
+        assert fetched.json() == created
+        assert created["external_id"] == "ZD-7"
+        assert client.get("/api/v1/tickets/unknown").status_code == 404
+
+
+def test_fetching_without_storage_returns_503() -> None:
+    for client in client_with_store(None):
+        assert client.get("/api/v1/tickets/anything").status_code == 503
+
+
+@pytest.mark.parametrize("external_id", ["", "has space", "x" * 129, "semi;colon"])
+def test_rejects_malformed_external_ids(client: TestClient, external_id: str) -> None:
+    response = client.post(
+        "/api/v1/classify", json={"ticket_text": "My parcel is late.", "external_id": external_id}
+    )
+
+    assert response.status_code == 422

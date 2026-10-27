@@ -16,6 +16,8 @@ from ticket_classifier.config import Settings, get_settings
 from ticket_classifier.llm import LLMConfigurationError
 from ticket_classifier.llm.claude_code import ClaudeCodeClient, ensure_subscription_auth
 from ticket_classifier.models import TicketResult
+from ticket_classifier.service import StorageDisabledError, TicketService
+from ticket_classifier.storage import TicketStore
 
 logger = logging.getLogger(__name__)
 
@@ -27,26 +29,35 @@ class ClassifyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ticket_text: str = Field(min_length=5, max_length=MAX_TICKET_CHARS)
+    # Optional idempotency key: a repeat returns the stored result instead of calling Claude.
+    external_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$"
+    )
 
 
 def create_app(
-    settings: Settings | None = None, classifier: TicketClassifier | None = None
+    settings: Settings | None = None,
+    classifier: TicketClassifier | None = None,
+    store: TicketStore | None = None,
 ) -> FastAPI:
-    """Build the app. Tests pass a classifier backed by a fake LLM; production builds one
-    on the Claude subscription backend at startup."""
+    """Build the app. Tests pass a classifier backed by a fake LLM (and a store only if
+    they need one); production builds both at startup."""
     resolved_settings = settings or get_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        resolved_store = store
         if classifier is None:
             # Fail at startup, not on the first request, if API credentials are present.
             ensure_subscription_auth()
             llm = ClaudeCodeClient(
                 model=resolved_settings.claude_model, effort=resolved_settings.effort
             )
-            app.state.classifier = TicketClassifier(llm, resolved_settings)
+            resolved_classifier = TicketClassifier(llm, resolved_settings)
+            resolved_store = store or TicketStore(resolved_settings.db_path)
         else:
-            app.state.classifier = classifier
+            resolved_classifier = classifier
+        app.state.service = TicketService(resolved_classifier, resolved_store)
         logger.info(
             "Ticket classifier ready: model=%s prompt=%s",
             resolved_settings.claude_model,
@@ -56,8 +67,8 @@ def create_app(
 
     app = FastAPI(title="Support Ticket Classifier", version=__version__, lifespan=lifespan)
 
-    def get_classifier(request: Request) -> TicketClassifier:
-        found: TicketClassifier = request.app.state.classifier
+    def get_service(request: Request) -> TicketService:
+        found: TicketService = request.app.state.service
         return found
 
     @app.get("/", include_in_schema=False)
@@ -71,15 +82,29 @@ def create_app(
     @app.post("/api/v1/classify")
     async def classify(
         body: ClassifyRequest,
-        ticket_classifier: Annotated[TicketClassifier, Depends(get_classifier)],
+        service: Annotated[TicketService, Depends(get_service)],
     ) -> TicketResult:
         try:
-            return await ticket_classifier.classify(body.ticket_text)
+            return await service.classify(body.ticket_text, body.external_id)
         except LLMConfigurationError:
             logger.exception("Classifier backend is misconfigured")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Classifier is not configured correctly. See the server logs.",
             ) from None
+
+    @app.get("/api/v1/tickets/{ticket_id}")
+    async def get_ticket(
+        ticket_id: str, service: Annotated[TicketService, Depends(get_service)]
+    ) -> TicketResult:
+        try:
+            found = await service.get(ticket_id)
+        except StorageDisabledError:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Storage is not enabled."
+            ) from None
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found.")
+        return found
 
     return app

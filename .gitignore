@@ -29,3 +29,6 @@ htmlcov/
 
 # Eval run reports
 evals/results/
+
+# Local result store
+data/
