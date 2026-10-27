@@ -53,3 +53,21 @@ def test_health_and_index(client: TestClient) -> None:
     index = client.get("/")
     assert index.status_code == 200
     assert "Support ticket classifier" in index.text
+
+
+def test_response_includes_the_redacted_text() -> None:
+    for client in client_for([response_with()]):
+        response = client.post(
+            "/api/v1/classify", json={"ticket_text": "Parcel late, email jane@example.com."}
+        )
+
+        body = response.json()
+        assert body["redacted_text"] == "Parcel late, email [EMAIL]."
+        assert "jane@example.com" not in response.text
+
+
+def test_index_shows_the_text_sent_to_claude(client: TestClient) -> None:
+    index = client.get("/").text
+
+    assert "Sent to Claude" in index
+    assert "result.redacted_text" in index

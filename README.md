@@ -68,6 +68,8 @@ The response includes:
 - the classification fields
 - `review_reasons`
 - `pii_redacted`: the types of personal data removed
+- `redacted_text`: the ticket exactly as Claude received it, with placeholders such as
+  `[EMAIL]`. The demo page shows it as "Sent to Claude". It is never logged.
 - `usage`: tokens, duration, and the API-equivalent cost. You are not billed this cost
   on a subscription; it shows how much of your plan the call used.
 
@@ -90,13 +92,22 @@ Settings come from environment variables or a `.env` file. Copy [`.env.example`]
 
 ```bash
 uv sync
-uv run pre-commit install   # ruff, mypy, gitleaks and file checks on every commit
+uv run pre-commit install   # commit: ruff, mypy, gitleaks; push: full CI gate incl. pytest
 uv run pytest               # offline: Claude is replaced by a fake
 uv run pytest -m live       # one real call on your subscription
 uv run ruff check . && uv run ruff format --check . && uv run mypy
 ```
 
 CI runs the same checks on every push and pull request, plus a gitleaks secret scan.
+
+A push is refused unless the whole suite passes. New behaviour needs new tests; existing
+tests are never changed just to make a change pass.
+
+### Watching the pipeline
+
+Run the server with `TICKET_LOG_LEVEL=DEBUG` to log each step of every ticket: redaction
+(PII types only), the guard check, each Claude attempt with its duration and tokens, and the
+final routing. Logs contain ticket IDs, never ticket text; `tests/test_classifier.py` checks this.
 
 ### Project layout
 
