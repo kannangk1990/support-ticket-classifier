@@ -4,7 +4,15 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # One weekly PR for all Python dependency bumps instead of one PR per package.
+    # Security updates still arrive as separate PRs so they are never held back.
+    groups:
+      python-dependencies:
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
