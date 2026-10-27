@@ -1,15 +1,24 @@
-"""Measure classification accuracy against a labelled set of tickets."""
+"""Measure classification accuracy, run-to-run consistency and injection handling against a
+labelled set of tickets."""
 
 import asyncio
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
 from ticket_classifier.classifier import TicketClassifier
-from ticket_classifier.models import ClassificationStatus, IssueCategory, Priority, TicketResult
+from ticket_classifier.config import Settings
+from ticket_classifier.models import (
+    ClassificationStatus,
+    IssueCategory,
+    Priority,
+    ReviewReason,
+    TicketResult,
+)
 
 
 class LabelledTicket(BaseModel):
@@ -17,46 +26,99 @@ class LabelledTicket(BaseModel):
 
     id: str
     text: str
-    category: IssueCategory
-    priority: Priority
+    # Optional so attack tickets, which have no meaningful category, don't skew accuracy.
+    category: IssueCategory | None = None
+    priority: Priority | None = None
     expect_review: bool = False
+    injection: bool = False
+
+
+def injection_detected(result: TicketResult) -> bool:
+    return (
+        result.status is ClassificationStatus.FLAGGED_INJECTION
+        or ReviewReason.INJECTION_SUSPECTED in result.review_reasons
+    )
+
+
+@dataclass
+class Score:
+    correct: int = 0
+    total: int = 0
+
+    def add(self, ok: bool) -> None:
+        self.total += 1
+        self.correct += int(ok)
+
+    def render(self) -> str:
+        if not self.total:
+            return "n/a"
+        return f"{self.correct}/{self.total} ({self.correct / self.total:.0%})"
 
 
 @dataclass
 class EvalReport:
-    total: int = 0
-    category_correct: int = 0
-    priority_correct: int = 0
-    review_correct: int = 0
+    model: str
+    prompt_version: str
+    effort: str
+    repeats: int
+    tickets: int = 0
+    runs: int = 0
     fallbacks: int = 0
+    category: Score = field(default_factory=Score)
+    priority: Score = field(default_factory=Score)
+    review: Score = field(default_factory=Score)
+    injection_caught: Score = field(default_factory=Score)
+    # Correct here means a legitimate ticket was NOT flagged as an injection.
+    legitimate_not_flagged: Score = field(default_factory=Score)
+    # A ticket is stable when every repeat gave the same answer.
+    stable_category: Score = field(default_factory=Score)
+    stable_priority: Score = field(default_factory=Score)
+    stable_review: Score = field(default_factory=Score)
     mistakes: list[str] = field(default_factory=list)
 
-    def record(self, ticket: LabelledTicket, result: TicketResult) -> None:
-        self.total += 1
-        if result.status is ClassificationStatus.FALLBACK:
-            self.fallbacks += 1
-        if result.issue_category is ticket.category:
-            self.category_correct += 1
-        else:
-            self.mistakes.append(
-                f"{ticket.id}: expected {ticket.category}, got {result.issue_category}"
-            )
-        if result.priority is ticket.priority:
-            self.priority_correct += 1
-        if result.requires_human_review == ticket.expect_review:
-            self.review_correct += 1
+    def record(self, ticket: LabelledTicket, results: Sequence[TicketResult]) -> None:
+        self.tickets += 1
+        for run, result in enumerate(results, start=1):
+            self.runs += 1
+            if result.status is ClassificationStatus.FALLBACK:
+                self.fallbacks += 1
+            if ticket.category is not None:
+                self.category.add(result.issue_category is ticket.category)
+                if result.issue_category is not ticket.category:
+                    self.mistakes.append(
+                        f"{ticket.id} (run {run}): expected {ticket.category}, "
+                        f"got {result.issue_category}"
+                    )
+            if ticket.priority is not None:
+                self.priority.add(result.priority is ticket.priority)
+            self.review.add(result.requires_human_review == ticket.expect_review)
+            if ticket.injection:
+                self.injection_caught.add(injection_detected(result))
+            else:
+                self.legitimate_not_flagged.add(not injection_detected(result))
+
+        if len(results) > 1:
+            self.stable_category.add(len({r.issue_category for r in results}) == 1)
+            self.stable_priority.add(len({r.priority for r in results}) == 1)
+            self.stable_review.add(len({r.requires_human_review for r in results}) == 1)
 
     def render(self) -> str:
-        def pct(correct: int) -> str:
-            return f"{correct}/{self.total} ({correct / self.total:.0%})" if self.total else "n/a"
-
         lines = [
-            f"Tickets evaluated : {self.total}",
-            f"Category accuracy : {pct(self.category_correct)}",
-            f"Priority accuracy : {pct(self.priority_correct)}",
-            f"Review flag match : {pct(self.review_correct)}",
-            f"Fallbacks         : {self.fallbacks}",
+            f"Model / prompt     : {self.model} / {self.prompt_version} (effort {self.effort})",
+            f"Tickets evaluated  : {self.tickets} x {self.repeats} run(s) = {self.runs}",
+            f"Category accuracy  : {self.category.render()}",
+            f"Priority accuracy  : {self.priority.render()}",
+            f"Review flag match  : {self.review.render()}",
+            f"Injections caught  : {self.injection_caught.render()}",
+            f"Legit not flagged  : {self.legitimate_not_flagged.render()}",
+            f"Fallbacks          : {self.fallbacks}",
         ]
+        if self.repeats > 1:
+            lines += [
+                f"Stable category    : {self.stable_category.render()}",
+                f"Stable priority    : {self.stable_priority.render()}",
+                f"Stable review flag : {self.stable_review.render()}",
+            ]
         if self.mistakes:
             lines.append("Category mistakes:")
             lines.extend(f"  - {mistake}" for mistake in self.mistakes)
@@ -76,10 +138,35 @@ def load_dataset(path: Path) -> list[LabelledTicket]:
     return tickets
 
 
-async def run_eval(classifier: TicketClassifier, tickets: Sequence[LabelledTicket]) -> EvalReport:
+async def run_eval(
+    classifier: TicketClassifier,
+    tickets: Sequence[LabelledTicket],
+    settings: Settings,
+    *,
+    repeats: int = 1,
+) -> EvalReport:
+    if repeats < 1:
+        raise ValueError("repeats must be at least 1")
     # The classifier's semaphore caps concurrency, so gathering everything is safe.
-    results = await asyncio.gather(*(classifier.classify(ticket.text) for ticket in tickets))
-    report = EvalReport()
-    for ticket, result in zip(tickets, results, strict=True):
-        report.record(ticket, result)
+    results = await asyncio.gather(
+        *(classifier.classify(ticket.text) for ticket in tickets for _ in range(repeats))
+    )
+    report = EvalReport(
+        model=settings.claude_model,
+        prompt_version=settings.prompt_version,
+        effort=settings.effort,
+        repeats=repeats,
+    )
+    for index, ticket in enumerate(tickets):
+        report.record(ticket, results[index * repeats : (index + 1) * repeats])
     return report
+
+
+def save_report(report: EvalReport, directory: Path, *, now: datetime | None = None) -> Path:
+    """Write the report as JSON so runs can be compared over time. It holds ticket IDs and
+    labels only, never ticket text."""
+    stamp = (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%SZ")
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{stamp}-{report.prompt_version}.json"
+    path.write_text(json.dumps({"created": stamp, **asdict(report)}, indent=2) + "\n")
+    return path

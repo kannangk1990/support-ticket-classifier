@@ -55,6 +55,11 @@ uv run ticket-classifier eval             # accuracy on evals/tickets.jsonl
 Read from stdin with `classify -`. To see the API schema, run the server and open
 `http://127.0.0.1:8000/docs`.
 
+`eval` reports category, priority and review accuracy, how many injection attacks were
+caught, and how many legitimate tickets were wrongly flagged as injections. Add
+`--repeat 3` to run each ticket three times and see how stable the answers are. Each run is
+saved as JSON in `evals/results/` (gitignored) so you can compare runs over time.
+
 ### API
 
 ```bash

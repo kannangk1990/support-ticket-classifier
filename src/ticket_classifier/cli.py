@@ -9,11 +9,12 @@ from pathlib import Path
 
 from ticket_classifier.classifier import TicketClassifier
 from ticket_classifier.config import Settings, get_settings
-from ticket_classifier.evaluation import load_dataset, run_eval
+from ticket_classifier.evaluation import load_dataset, run_eval, save_report
 from ticket_classifier.llm import LLMConfigurationError
 from ticket_classifier.llm.claude_code import ClaudeCodeClient
 
 DEFAULT_EVAL_DATASET = Path("evals/tickets.jsonl")
+DEFAULT_EVAL_RESULTS = Path("evals/results")
 
 
 def _build_classifier(settings: Settings) -> TicketClassifier:
@@ -29,11 +30,17 @@ def _classify(settings: Settings, text: str) -> int:
     return 0
 
 
-def _evaluate(settings: Settings, dataset: Path, limit: int | None) -> int:
+def _evaluate(
+    settings: Settings, dataset: Path, limit: int | None, repeat: int, results_dir: Path
+) -> int:
     tickets = load_dataset(dataset)[:limit]
-    print(f"Running {len(tickets)} tickets on your Claude subscription...", file=sys.stderr)
-    report = asyncio.run(run_eval(_build_classifier(settings), tickets))
+    print(
+        f"Running {len(tickets)} tickets x {repeat} on your Claude subscription...",
+        file=sys.stderr,
+    )
+    report = asyncio.run(run_eval(_build_classifier(settings), tickets, settings, repeats=repeat))
     print(report.render())
+    print(f"Saved {save_report(report, results_dir)}", file=sys.stderr)
     return 0
 
 
@@ -58,6 +65,10 @@ def _parser() -> argparse.ArgumentParser:
     evaluate = commands.add_parser("eval", help="measure accuracy on a labelled dataset")
     evaluate.add_argument("--dataset", type=Path, default=DEFAULT_EVAL_DATASET)
     evaluate.add_argument("--limit", type=int, default=None, help="only run the first N tickets")
+    evaluate.add_argument(
+        "--repeat", type=int, default=1, help="run each ticket N times to measure consistency"
+    )
+    evaluate.add_argument("--results-dir", type=Path, default=DEFAULT_EVAL_RESULTS)
     return parser
 
 
@@ -73,7 +84,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "classify":
             return _classify(settings, args.text)
         if args.command == "eval":
-            return _evaluate(settings, args.dataset, args.limit)
+            if args.repeat < 1:
+                print("error: --repeat must be at least 1", file=sys.stderr)
+                return 2
+            return _evaluate(settings, args.dataset, args.limit, args.repeat, args.results_dir)
         return _serve(settings)
     except LLMConfigurationError as exc:
         print(f"error: {exc}", file=sys.stderr)
