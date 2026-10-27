@@ -16,8 +16,8 @@ from ticket_classifier.models import (
     ClassificationStatus,
     IssueCategory,
     Priority,
-    ReviewReason,
     TicketResult,
+    injection_detected,
 )
 
 
@@ -31,13 +31,6 @@ class LabelledTicket(BaseModel):
     priority: Priority | None = None
     expect_review: bool = False
     injection: bool = False
-
-
-def injection_detected(result: TicketResult) -> bool:
-    return (
-        result.status is ClassificationStatus.FLAGGED_INJECTION
-        or ReviewReason.INJECTION_SUSPECTED in result.review_reasons
-    )
 
 
 @dataclass

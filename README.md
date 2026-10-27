@@ -85,6 +85,34 @@ The response includes:
 - `usage`: tokens, duration, and the API-equivalent cost. You are not billed this cost
   on a subscription; it shows how much of your plan the call used.
 
+## Monitoring
+
+`GET /metrics` serves Prometheus metrics. Every label comes from a fixed list, so metrics
+never contain ticket text:
+
+| Metric | What it counts |
+|---|---|
+| `ticket_classifier_tickets_total{status}` | Tickets by final status |
+| `ticket_classifier_categories_total{category,priority}` | Classified categories and priorities |
+| `ticket_classifier_review_reasons_total{reason}` | Why tickets went to human review |
+| `ticket_classifier_pii_redacted_total{type}` | Tickets with each type of personal data |
+| `ticket_classifier_llm_attempts_total{outcome}` | Claude calls: success, unavailable, invalid_output, refused |
+| `ticket_classifier_llm_tokens_total{direction}` | Input and output tokens |
+| `ticket_classifier_duration_seconds` | End-to-end time per ticket (histogram) |
+| `ticket_classifier_circuit_state` | 0 closed, 1 half-open, 2 open |
+| `ticket_classifier_storage_errors_total`, `ticket_classifier_stored_result_hits_total` | Storage failures, and repeats answered from storage |
+| `ticket_classifier_alert_firing{alert}` | 1 while an in-app alert is firing |
+
+**Alerts** work two ways:
+
+- **In the app, with no setup:** an `ALERT FIRING` line is logged at ERROR when the circuit
+  opens, or when the fallback or injection rate over the last `TICKET_ALERT_WINDOW_TICKETS`
+  tickets crosses its threshold. An `ALERT RESOLVED` line is logged at INFO when it clears.
+  Each alert logs once when it starts and once when it clears, not on every ticket.
+- **With Prometheus:** [`deploy/prometheus/alerts.yml`](deploy/prometheus/alerts.yml) has the
+  same rules plus service-down, slow-ticket and storage-error alerts. Route them with Alertmanager.
+  [`prometheus.example.yml`](deploy/prometheus/prometheus.example.yml) scrapes a local server.
+
 ## Configuration
 
 Settings come from environment variables or a `.env` file. Copy [`.env.example`](.env.example) to start.
@@ -101,6 +129,8 @@ Settings come from environment variables or a `.env` file. Copy [`.env.example`]
 | `TICKET_RETRY_BASE_DELAY_SECONDS` / `TICKET_RETRY_MAX_DELAY_SECONDS` | `1` / `10` | Random backoff before retrying a transient failure, doubling per attempt up to the cap |
 | `TICKET_CIRCUIT_FAILURE_THRESHOLD` | `5` | Tickets in a row that can't reach Claude before the circuit opens |
 | `TICKET_CIRCUIT_RESET_SECONDS` | `30` | How long an open circuit sends tickets straight to human review before trying Claude again |
+| `TICKET_ALERT_WINDOW_TICKETS` | `20` | Recent tickets the in-app alerts look at |
+| `TICKET_ALERT_FALLBACK_RATE` / `TICKET_ALERT_INJECTION_RATE` | `0.2` / `0.3` | In-app alert thresholds |
 | `TICKET_DB_PATH` | `data/tickets.db` | SQLite file for results and redacted text (gitignored) |
 | `TICKET_HOST` / `TICKET_PORT` | `127.0.0.1` / `8000` | Server bind address |
 
@@ -140,9 +170,12 @@ src/ticket_classifier/
   service.py         idempotent classify, lookup and reprocess on top of storage
   storage.py         SQLite result store (redacted text only)
   resilience.py      circuit breaker
+  metrics.py         Prometheus metrics
+  alerts.py          in-app alerts over recent tickets
   api.py, cli.py     FastAPI app and CLI
   evaluation.py      accuracy measurement
 evals/tickets.jsonl  labelled tickets
+deploy/prometheus/   alert rules and an example scrape config
 tests/               offline unit tests plus one opt-in live test
 ```
 

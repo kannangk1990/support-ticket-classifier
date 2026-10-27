@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     circuit_failure_threshold: int = Field(default=5, ge=1)
     circuit_reset_seconds: float = Field(default=30.0, gt=0)
 
+    # In-app alerts over a sliding window of the most recent tickets.
+    alert_window_tickets: int = Field(default=20, ge=1)
+    alert_fallback_rate: float = Field(default=0.2, gt=0.0, le=1.0)
+    alert_injection_rate: float = Field(default=0.3, gt=0.0, le=1.0)
+
     # Classification results, including redacted ticket text. Never the original text.
     db_path: Path = Path("data/tickets.db")
 

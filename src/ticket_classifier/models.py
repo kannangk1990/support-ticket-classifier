@@ -116,6 +116,14 @@ class TicketResult(BaseModel):
     usage: Usage | None
 
 
+def injection_detected(result: TicketResult) -> bool:
+    """True if the guard blocked the ticket or Claude flagged it as an injection attempt."""
+    return (
+        result.status is ClassificationStatus.FLAGGED_INJECTION
+        or ReviewReason.INJECTION_SUSPECTED in result.review_reasons
+    )
+
+
 def llm_output_schema() -> dict[str, Any]:
     """JSON schema for LLMClassification with every $ref inlined, so the structured-output
     tool sees one flat, self-contained schema."""
