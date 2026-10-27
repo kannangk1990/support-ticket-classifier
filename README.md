@@ -260,6 +260,7 @@ src/ticket_classifier/
   alerts.py          in-app alerts over recent tickets
   api.py, cli.py     FastAPI app and CLI
   evaluation.py      accuracy measurement
+docs/decisions.md    design decisions and why they were made
 evals/tickets.jsonl  labelled tickets
 deploy/prometheus/   alert rules and an example scrape config
 tests/               offline unit tests plus one opt-in live test
