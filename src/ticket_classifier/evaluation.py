@@ -3,7 +3,7 @@ labelled set of tickets."""
 
 import asyncio
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,7 +67,11 @@ class EvalReport:
     stable_category: Score = field(default_factory=Score)
     stable_priority: Score = field(default_factory=Score)
     stable_review: Score = field(default_factory=Score)
+    # Category mistakes; kept under this name so older saved reports stay comparable.
     mistakes: list[str] = field(default_factory=list)
+    priority_mistakes: list[str] = field(default_factory=list)
+    # Tickets whose answers differed between repeats, with the values seen, in run order.
+    unstable: list[str] = field(default_factory=list)
 
     def record(self, ticket: LabelledTicket, results: Sequence[TicketResult]) -> None:
         self.tickets += 1
@@ -84,6 +88,11 @@ class EvalReport:
                     )
             if ticket.priority is not None:
                 self.priority.add(result.priority is ticket.priority)
+                if result.priority is not ticket.priority:
+                    self.priority_mistakes.append(
+                        f"{ticket.id} (run {run}): expected {ticket.priority}, "
+                        f"got {result.priority}"
+                    )
             self.review.add(result.requires_human_review == ticket.expect_review)
             if ticket.injection:
                 self.injection_caught.add(injection_detected(result))
@@ -94,6 +103,20 @@ class EvalReport:
             self.stable_category.add(len({r.issue_category for r in results}) == 1)
             self.stable_priority.add(len({r.priority for r in results}) == 1)
             self.stable_review.add(len({r.requires_human_review for r in results}) == 1)
+            differences = [
+                f"{name} {'/'.join(values)}"
+                for name, values in (
+                    ("category", _distinct(str(r.issue_category) for r in results)),
+                    ("priority", _distinct(str(r.priority) for r in results)),
+                    (
+                        "review",
+                        _distinct("yes" if r.requires_human_review else "no" for r in results),
+                    ),
+                )
+                if len(values) > 1
+            ]
+            if differences:
+                self.unstable.append(f"{ticket.id}: {'; '.join(differences)}")
 
     def render(self) -> str:
         lines = [
@@ -112,10 +135,19 @@ class EvalReport:
                 f"Stable priority    : {self.stable_priority.render()}",
                 f"Stable review flag : {self.stable_review.render()}",
             ]
-        if self.mistakes:
-            lines.append("Category mistakes:")
-            lines.extend(f"  - {mistake}" for mistake in self.mistakes)
+        for title, entries in (
+            ("Category mistakes:", self.mistakes),
+            ("Priority mistakes:", self.priority_mistakes),
+            ("Unstable tickets:", self.unstable),
+        ):
+            if entries:
+                lines.append(title)
+                lines.extend(f"  - {entry}" for entry in entries)
         return "\n".join(lines)
+
+
+def _distinct(values: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(values))  # keeps first-seen order
 
 
 def load_dataset(path: Path) -> list[LabelledTicket]:
